@@ -22,16 +22,32 @@ class Rule(BaseModel):
     consequent: str
     description: Optional[str] = None
 
-# Sample rules for a tiny device with battery, power, and network
-SAMPLE_RULES: List[Rule] = [
-    Rule(antecedents=["battery_low"], consequent="power_unstable", description="Low battery causes unstable power"),
-    Rule(antecedents=["power_unstable"], consequent="system_restarts", description="Unstable power triggers restarts"),
-    Rule(antecedents=["no_wifi", "router_off"], consequent="network_down", description="No WiFi and router off -> network down"),
-    Rule(antecedents=["network_down"], consequent="cannot_sync", description="No network -> cannot sync"),
-    # Fault hypotheses (marking faults with prefix fault_)
+# Different rule sets for forward vs backward reasoning
+# Forward rules: broader, more permissive for exploratory hypothesis generation
+FORWARD_RULES: List[Rule] = [
+    Rule(antecedents=["battery_low"], consequent="power_unstable", description="Low battery can cause unstable power"),
+    Rule(antecedents=["power_unstable"], consequent="system_restarts", description="Unstable power can trigger restarts"),
+    Rule(antecedents=["no_wifi", "router_off"], consequent="network_down", description="No WiFi and router off implies network down"),
+    Rule(antecedents=["network_down"], consequent="cannot_sync", description="If the network is down, syncing fails"),
+    # Fault hypotheses (prefix fault_)
     Rule(antecedents=["power_unstable"], consequent="fault_power_supply", description="Unstable power suggests power supply fault"),
-    Rule(antecedents=["battery_low", "charging_not_working"], consequent="fault_battery", description="Low battery + no charging -> battery fault"),
+    Rule(antecedents=["battery_low", "charging_not_working"], consequent="fault_battery", description="Low battery + charging not working suggests battery fault"),
     Rule(antecedents=["network_down"], consequent="fault_network", description="Network down suggests network fault"),
+]
+
+# Backward rules: stricter, require stronger evidence for a proof
+BACKWARD_RULES: List[Rule] = [
+    # Derivations for intermediate states
+    Rule(antecedents=["battery_low"], consequent="power_unstable", description="Low battery can cause unstable power"),
+    Rule(antecedents=["mains_fluctuation"], consequent="power_unstable", description="Mains fluctuation can cause unstable power"),
+    Rule(antecedents=["power_unstable"], consequent="system_restarts", description="Unstable power can trigger restarts"),
+    Rule(antecedents=["interference", "weak_signal"], consequent="no_wifi", description="Interference and weak signal cause Wi‑Fi loss"),
+    Rule(antecedents=["no_wifi", "router_off"], consequent="network_down", description="Router off with no Wi‑Fi implies network is down"),
+    Rule(antecedents=["network_down"], consequent="cannot_sync", description="No network means syncing fails"),
+    # Fault hypotheses (require stronger antecedents)
+    Rule(antecedents=["power_unstable", "system_restarts"], consequent="fault_power_supply", description="Unstable power AND restarts indicate power supply fault"),
+    Rule(antecedents=["battery_low", "charging_not_working", "old_battery"], consequent="fault_battery", description="Low, not charging, and aged battery indicates battery fault"),
+    Rule(antecedents=["no_wifi", "router_off", "cannot_sync"], consequent="fault_network", description="No Wi‑Fi, router off, and cannot sync indicates network fault"),
 ]
 
 FAULT_PREFIX = "fault_"
@@ -142,14 +158,15 @@ def test_database():
 @app.get("/rules")
 def get_rules():
     return {
-        "rules": [r.model_dump() for r in SAMPLE_RULES],
+        "forward_rules": [r.model_dump() for r in FORWARD_RULES],
+        "backward_rules": [r.model_dump() for r in BACKWARD_RULES],
         "fault_prefix": FAULT_PREFIX,
     }
 
 @app.post("/diagnose/forward")
 def diagnose_forward(req: FactsRequest):
     input_facts = set(a.strip() for a in req.facts if a and a.strip())
-    all_facts, trace = forward_chain(input_facts, SAMPLE_RULES)
+    all_facts, trace = forward_chain(input_facts, FORWARD_RULES)
     faults = sorted([f for f in all_facts if f.startswith(FAULT_PREFIX)])
     return {
         "input_facts": sorted(list(input_facts)),
@@ -162,7 +179,7 @@ def diagnose_forward(req: FactsRequest):
 def diagnose_backward(req: BackwardRequest):
     input_facts = set(a.strip() for a in req.facts if a and a.strip())
     goal = req.goal.strip()
-    provable, proof = backward_chain(goal, input_facts, SAMPLE_RULES)
+    provable, proof = backward_chain(goal, input_facts, BACKWARD_RULES)
     return {
         "goal": goal,
         "facts": sorted(list(input_facts)),
